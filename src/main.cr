@@ -1,78 +1,159 @@
 require "json"
 
+class Fixture
+  def initialize(@file : String, @name : String, @line_number : Int32, @col_number : Int32, @arguments : Hash(String, Tuple(Int32, Int32)))
+  end
+end
+
 def listen_request
-    length = (first_line = gets.as(String)).split(' ').last.to_i32
+  length = (first_line = gets.as(String)).split(' ').last.to_i32
 
-    slice = Bytes.new(length)
+  slice = Bytes.new(length)
 
-    2.times {STDIN.read_byte}
-    STDIN.read_fully slice
+  2.times { STDIN.read_byte }
+  STDIN.read_fully slice
 
-    str = String.new slice
-    
-    File.open("#{__DIR__}/log.json", "a") do |file|
-        file << first_line
-        file << "\r\n"
-        file << str
-        file << '\n'
-    end
+  str = String.new slice
 
-    JSON.parse str
+  JSON.parse str
 end
 
 def respond_request(response)
-    STDOUT << "Content-Length: #{response.bytesize}\r\n"
-    STDOUT << "\r\n"
-    STDOUT << response
-    STDOUT.flush
+  STDOUT << "Content-Length: #{response.bytesize}\r\n"
+  STDOUT << "\r\n"
+  STDOUT << response
+  STDOUT.flush
 end
 
 class Lsp
-    @directory : Dir
+  @directory : Dir
 
-    def initialize(request)
-      @directory = Dir.open(request["params"]["workspaceFolders"][0]["uri"].as_s[7..])
-    end
+  def initialize(request)
+    @directory = Dir.open(request["params"]["workspaceFolders"][0]["uri"].as_s[7..])
+  end
 
-    def initialize_response(request)
-        {
-            "capabilities" => {
-                "implementationProvider" => true
-            }
-        }
-    end
+  def initialize_response(request)
+    {
+      "capabilities" => {
+        "implementationProvider" => true,
+      },
+    }
+  end
 
-    def implementation(request)
-        files_to_analyze = Dir.glob "#{@directory.path}/**/*.py"
+  def implementation(request)
+    cur_file_path = request["params"]["textDocument"]["uri"].as_s[7..]
+    position = request["params"]["position"]
+    line_no_to_find = position["line"].as_i
+    col_number_to_find = position["character"].as_i
 
-        files_to_analyze.each do |file_path|
-            File.open(file_path) do |file|
-                file.each_line do |line|
-                            
+    files_to_analyze = Dir.glob "#{@directory.path}/**/*.py"
+
+    fixtures = [] of Fixture
+
+    searching_for_fixture = ""
+
+    implementation = nil
+
+    files_to_analyze.each do |file_path|
+      File.open(file_path) do |file|
+        found_fixture = false
+        line_no = -1
+        file.each_line do |line|
+          line_no += 1
+          if line.includes? "@pytest.fixture"
+            found_fixture = true
+            next
+          end
+
+          if found_fixture
+            if /^\s*@/.match line
+              next
+            elsif result = /\s*def\s*(\w[\w\d]*)\s*\((\s*(?:\w[\w\d]*)?\s*(?:,\s*\w[\w\d]*)*\s*)\):/.match line
+              if result
+                arguments = Hash(String, Tuple(Int32, Int32)).new
+
+                name = result[1]
+                if raw_arguments = result[2]
+                  matches = [] of Tuple(Int32, String)
+
+                  post_match = raw_arguments
+                  arg_start = result.begin(2).as Int32
+                  while match = post_match.match(/(\w[\w\d]*)/)
+                      matches << { arg_start + match.begin(1).as(Int32), match[1] }
+
+                      arg_start = match.end(1).as(Int32) + arg_start
+                      post_match = match.post_match
+                  end
+
+                  cur_match = 0
+                  
+                  matches.each do |x|
+                    arguments[x[1]] = {line_no, x[0]}
+                    cur_match += 1
+                  end
                 end
+
+                fixture = Fixture.new file_path, name, line_no, result.begin(1).as Int32, arguments
+                fixtures << fixture
+
+                if file_path == cur_file_path && line_no == line_no_to_find 
+                    fixture.@arguments.each do |x|
+                        if x[1][1] <= col_number_to_find && col_number_to_find < x[1][1] + x[0].size
+                            searching_for_fixture = x[0]
+                            break
+                        end
+                    end
+                end
+              end
+              found_fixture = false
+            else
+              found_fixture = false
+              next
             end
+          end
         end
+      end
     end
 
-    def get_response(request)
-        result = (
-            case request["method"].to_s
-            when "initialize"
-                initialize_response request
-            when "textDocument/implementation"
-                implementation request
-            end
-        )
-
-        response = {
-            "jsonrpc" => "2.0",
-            "result" => result
-        }
-        
-        response["id"] = request["id"].to_s if request["id"]?
-
-        response.to_json
+    if searching_for_fixture
+      fixtures.each do |x|
+          if x.@name == searching_for_fixture
+              pos = {"line" => x.@line_number, "character" => x.@col_number}
+              implementation = {
+                  "uri" => "file://" + x.@file,
+                  "range" => {
+                      "start" => pos,
+                      "end" => pos
+                  }
+              }
+              break
+          end
+      end
     end
+
+    implementation
+    
+  end
+
+  def get_response(request)
+    result = (
+      case request["method"].to_s
+      when "initialize"
+        initialize_response request
+      when "textDocument/implementation"
+        implementation request
+      end
+    )
+
+    response = {
+      "jsonrpc" => "2.0",
+      "result"  => result,
+    }
+
+    response["id"] = request["id"].to_s if request["id"]?
+
+    response.to_json
+  end
 end
 
 request = listen_request
@@ -80,9 +161,9 @@ lsp = Lsp.new request
 respond_request lsp.get_response request
 
 while true
-    request = listen_request
+  request = listen_request
 
-    response = lsp.get_response request
+  response = lsp.get_response request
 
-    respond_request response
+  respond_request response
 end
