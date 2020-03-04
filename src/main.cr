@@ -40,35 +40,47 @@ class Lsp
     }
   end
 
-  private def parse_line(line_no : Int32, line : String)
-    result = /\s*def\s*(\w[\w\d]*)\s*\((\s*(?:\w[\w\d]*)?\s*(?:,\s*\w[\w\d]*)*\s*)\):/.match line
-    if result
-      arguments = Hash(String, Tuple(Int32, Int32)).new
+  private def parse_line(user_line : Int32, user_col : Int32, is_user_file : Bool, line_no : Int32, lines)
+    if /^\s*def\s*\w[\w\d]*\s*\(/.match lines.first
+      if result = /^[ \t]*def\s*(\w[\w\d]*)\s*\((\s*(?:\w[\w\d]*)?\s*(?:,\s*\w[\w\d]*)*\s*)\):/im.match lines.join
+        searching_for_fixture = nil
+        arguments = Hash(String, Tuple(Int32, Int32)).new
 
-      name = result[1]
-      if raw_arguments = result[2]
-        matches = [] of Tuple(Int32, String)
+        name = result[1]
+        if raw_arguments = result[2]
+          matches = [] of Tuple(Int32, Int32, String)
 
-        post_match = raw_arguments
-        arg_start = result.begin(2).as Int32
-        while match = post_match.match(/(\w[\w\d]*)/)
-          matches << {arg_start + match.begin(1).as(Int32), match[1]}
+          post_match = raw_arguments
+          arg_start = result.begin(2).as(Int32)
+          arg_line = line_no
+          while match = post_match.match(/(\w[\w\d]*)/i)
+            if (newline_count = match.pre_match.count '\n') > 0
+              arg_line += newline_count
+              arg_start = match.pre_match.split('\n').last.size
+            else
+              arg_start += match.begin(1).as(Int32)
+            end
 
-          arg_start = match.end(1).as(Int32) + arg_start
-          post_match = match.post_match
+            matches << {arg_line, arg_start, match[1]}
+
+            post_match = match.post_match
+            arg_start += match[1].size
+          end
+
+          matches.each do |x|
+            arguments[x[2]] = {x[0], x[1]}
+            if is_user_file && x[0] == user_line
+              if x[1] <= user_col && user_col < x[1] + x[2].size
+                searching_for_fixture = x[2]
+              end
+            end
+          end
         end
 
-        cur_match = 0
-
-        matches.each do |x|
-          arguments[x[1]] = {line_no, x[0]}
-          cur_match += 1
-        end
+        {name, line_no, result.begin(1).as Int32, arguments, searching_for_fixture}
+      else
+        nil
       end
-
-      {name, line_no, result.begin(1).as Int32, arguments}
-    else
-      nil
     end
   end
 
@@ -88,9 +100,10 @@ class Lsp
 
     files_to_analyze.each do |file_path|
       File.open(file_path) do |file|
+        file_lines = file.gets_to_end.split('\n').map { |x| x + '\n' }
         found_fixture = false
         line_no = -1
-        file.each_line do |line|
+        file_lines.each do |line|
           line_no += 1
 
           if line.includes? "@pytest.fixture"
@@ -98,26 +111,22 @@ class Lsp
             next
           end
 
-          if line_info = parse_line line_no, line
-            name, line_no, col_no, arguments = line_info
+          if line_info = parse_line line_no_to_find, col_number_to_find, cur_file_path == file_path, line_no, file_lines[line_no..]
+            name, line_no, col_no, arguments, _searching_for_fixture = line_info
+            if _searching_for_fixture
+              searching_for_fixture = _searching_for_fixture
+            end
 
             if found_fixture
               fixture = Fixture.new file_path, name, line_no, col_no, arguments
               fixtures << fixture
 
               found_fixture = false
-            end
-
-            if file_path == cur_file_path && line_no == line_no_to_find
-              arguments.each do |x|
-                if x[1][1] <= col_number_to_find && col_number_to_find < x[1][1] + x[0].size
-                  searching_for_fixture = x[0]
-                  break
-                end
-              end
+            else
+              next unless name.starts_with? "test_"
             end
           elsif found_fixture
-            if /^\s*@/.match(line) || /^\s*$/.match(line)
+            if /^\s*@/i.match(line) || /^\s*$/i.match(line)
               next
             else
               found_fixture = false
