@@ -1,4 +1,4 @@
-# Pytest LSP
+# Pytest LSP ![Crystal CI](https://github.com/teggotic/pytest_lsp/workflows/Crystal%20CI/badge.svg?branch=master)
 
 LSP implementation for pytests in pure [Crystal](https://crystal-lang.org/)
 
