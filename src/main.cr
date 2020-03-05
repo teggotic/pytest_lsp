@@ -1,8 +1,14 @@
 require "json"
 
-class Fixture
+class PytestObject
   def initialize(@file : String, @name : String, @line_number : Int32, @col_number : Int32, @arguments : Hash(String, Tuple(Int32, Int32)))
   end
+end
+
+class PytestTest < PytestObject
+end
+
+class PytestFixture < PytestObject
 end
 
 def listen_request
@@ -27,7 +33,8 @@ end
 
 class Lsp
   @directory : Dir
-  @fixtures : Array(Fixture)? = nil
+  @fixtures : Array(PytestFixture)?
+  @tests : Array(PytestTest)?
 
   def initialize(request)
     @directory = Dir.open(request["params"]["workspaceFolders"][0]["uri"].as_s[7..])
@@ -76,17 +83,18 @@ class Lsp
           end
         end
 
-        {name, line_no, result.begin(1).as Int32, arguments }
+        {name, line_no, result.begin(1).as Int32, arguments}
       else
         nil
       end
     end
   end
 
-  private def get_fixtures()
+  private def parse_files
     files_to_analyze = Dir.glob "#{@directory.path}/**/*.py"
 
-    fixtures = [] of Fixture
+    fixtures = [] of PytestFixture
+    tests = [] of PytestTest
 
     files_to_analyze.each do |file_path|
       File.open(file_path) do |file|
@@ -105,12 +113,11 @@ class Lsp
             name, line_no, col_no, arguments = line_info
 
             if found_fixture
-              fixture = Fixture.new file_path, name, line_no, col_no, arguments
-              fixtures << fixture
+              fixtures << PytestFixture.new file_path, name, line_no, col_no, arguments
 
               found_fixture = false
             else
-              next unless name.starts_with? "test_"
+              tests << PytestTest.new file_path, name, line_no, col_no, arguments
             end
           elsif found_fixture
             if /^\s*@/i.match(line) || /^\s*$/i.match(line)
@@ -123,7 +130,7 @@ class Lsp
       end
     end
 
-    fixtures
+    { fixtures, tests }
   end
 
   def implementation(request)
@@ -132,16 +139,16 @@ class Lsp
     line_no_to_find = position["line"].as_i
     col_number_to_find = position["character"].as_i
 
-    unless @fixtures
-      @fixtures = get_fixtures
+    unless @fixtures && @tests
+      @fixtures, @tests = parse_files
     end
 
     fixture_to_find = nil
 
-    @fixtures.not_nil!.each do |fixture|
+    (@tests.not_nil! + @fixtures.not_nil!).each do |pytest_object|
       break if fixture_to_find
-      if fixture.@file == cur_file_path
-        fixture.@arguments.each do |arg|
+      if pytest_object.@file == cur_file_path
+        pytest_object.@arguments.each do |arg|
           if arg[1][0] == line_no_to_find
             if arg[1][1] <= col_number_to_find && col_number_to_find < arg[1][1] + arg[0].size
               fixture_to_find = arg[0]
@@ -150,10 +157,6 @@ class Lsp
           end
         end
       end
-    end
-
-    File.open("#{__DIR__}/log.txt", "a") do |file|
-      file.puts fixture_to_find
     end
 
     result = nil
