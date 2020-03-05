@@ -1,6 +1,7 @@
 # Pytest LSP ![Crystal CI](https://github.com/teggotic/pytest_lsp/workflows/Crystal%20CI/badge.svg?branch=master)
 
 LSP implementation for pytests in pure [Crystal](https://crystal-lang.org/)
+Version 1.0.0v will be available as soon we switch to [LSP server library](https://github.com/teggotic/crystal-lsp-server). Also [LSP server library](https://github.com/teggotic/crystal-lsp-server) need to be 1.0.0v+ too.
 
 ## Usage
 
@@ -27,10 +28,11 @@ If you think that the problem is in pytest_lsp itself, then feel free to open an
 
 ## Roadmap
 
-- [x] Support custom written fixtures
-- [x] Support test functions
+- [x] Support custom written fixtures (Unstable)
+- [x] Support test functions (Unstable)
 - [ ] Add command to list all fixtures | tests
 - [ ] Add coc extention so one can install pytest_lsp by `:CocInstall` command
+- [ ] Rewrite to use [LSP server library](https://github.com/teggotic/crystal-lsp-server)
 
 ## Contributing
 
