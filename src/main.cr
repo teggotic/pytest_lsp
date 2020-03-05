@@ -27,6 +27,7 @@ end
 
 class Lsp
   @directory : Dir
+  @fixtures : Array(Fixture)? = nil
 
   def initialize(request)
     @directory = Dir.open(request["params"]["workspaceFolders"][0]["uri"].as_s[7..])
@@ -36,14 +37,17 @@ class Lsp
     {
       "capabilities" => {
         "implementationProvider" => true,
+        "textDocumentSync"       => {
+          "change" => 2,
+        },
       },
     }
   end
 
-  private def parse_line(user_line : Int32, user_col : Int32, is_user_file : Bool, line_no : Int32, lines)
+  private def parse_line(line_no : Int32, lines)
     if /^\s*def\s*\w[\w\d]*\s*\(/.match lines.first
       if result = /^[ \t]*def\s*(\w[\w\d]*)\s*\((\s*(?:\w[\w\d]*)?\s*(?:,\s*\w[\w\d]*)*\s*)\):/im.match lines.join
-        searching_for_fixture = nil
+        fixture_to_find = nil
         arguments = Hash(String, Tuple(Int32, Int32)).new
 
         name = result[1]
@@ -69,34 +73,20 @@ class Lsp
 
           matches.each do |x|
             arguments[x[2]] = {x[0], x[1]}
-            if is_user_file && x[0] == user_line
-              if x[1] <= user_col && user_col < x[1] + x[2].size
-                searching_for_fixture = x[2]
-              end
-            end
           end
         end
 
-        {name, line_no, result.begin(1).as Int32, arguments, searching_for_fixture}
+        {name, line_no, result.begin(1).as Int32, arguments }
       else
         nil
       end
     end
   end
 
-  def implementation(request)
-    cur_file_path = request["params"]["textDocument"]["uri"].as_s[7..]
-    position = request["params"]["position"]
-    line_no_to_find = position["line"].as_i
-    col_number_to_find = position["character"].as_i
-
+  private def get_fixtures()
     files_to_analyze = Dir.glob "#{@directory.path}/**/*.py"
 
     fixtures = [] of Fixture
-
-    searching_for_fixture = ""
-
-    implementation = nil
 
     files_to_analyze.each do |file_path|
       File.open(file_path) do |file|
@@ -111,11 +101,8 @@ class Lsp
             next
           end
 
-          if line_info = parse_line line_no_to_find, col_number_to_find, cur_file_path == file_path, line_no, file_lines[line_no..]
-            name, line_no, col_no, arguments, _searching_for_fixture = line_info
-            if _searching_for_fixture
-              searching_for_fixture = _searching_for_fixture
-            end
+          if line_info = parse_line line_no, file_lines[line_no..]
+            name, line_no, col_no, arguments = line_info
 
             if found_fixture
               fixture = Fixture.new file_path, name, line_no, col_no, arguments
@@ -136,11 +123,46 @@ class Lsp
       end
     end
 
-    if searching_for_fixture
-      fixtures.each do |x|
-        if x.@name == searching_for_fixture
+    fixtures
+  end
+
+  def implementation(request)
+    cur_file_path = request["params"]["textDocument"]["uri"].as_s[7..]
+    position = request["params"]["position"]
+    line_no_to_find = position["line"].as_i
+    col_number_to_find = position["character"].as_i
+
+    unless @fixtures
+      @fixtures = get_fixtures
+    end
+
+    fixture_to_find = nil
+
+    @fixtures.not_nil!.each do |fixture|
+      break if fixture_to_find
+      if fixture.@file == cur_file_path
+        fixture.@arguments.each do |arg|
+          if arg[1][0] == line_no_to_find
+            if arg[1][1] <= col_number_to_find && col_number_to_find < arg[1][1] + arg[0].size
+              fixture_to_find = arg[0]
+              break
+            end
+          end
+        end
+      end
+    end
+
+    File.open("#{__DIR__}/log.txt", "a") do |file|
+      file.puts fixture_to_find
+    end
+
+    result = nil
+
+    if fixture_to_find
+      @fixtures.not_nil!.each do |x|
+        if x.@name == fixture_to_find
           pos = {"line" => x.@line_number, "character" => x.@col_number}
-          implementation = {
+          result = {
             "uri"   => "file://" + x.@file,
             "range" => {
               "start" => pos,
@@ -152,7 +174,11 @@ class Lsp
       end
     end
 
-    implementation
+    result
+  end
+
+  def onChange(request) : Nil
+    @fixtures = nil
   end
 
   def get_response(request)
@@ -162,6 +188,8 @@ class Lsp
         initialize_response request
       when "textDocument/implementation"
         implementation request
+      when "textDocument/didChange"
+        onChange request
       end
     )
 
